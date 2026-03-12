@@ -7,9 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1rHw9JqVK4X2CWfN-nmCjPL9wOSZ1QcG7
 """
 
-# @title
-!pip install streamlit yfinance pandas numpy matplotlib
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -22,7 +19,7 @@ from streamlit_autorefresh import st_autorefresh
 # 1. Налаштування сторінки
 st.set_page_config(page_title="Game Theory Trader", layout="wide")
 
-# --- БЛОК ТАЙМЕРА (СИНХРОНІЗАЦІЯ UTC+2) ---
+# --- БЛОК ТАЙМЕРА (UTC+2) ---
 kyiv_tz = timezone(timedelta(hours=2))
 
 def get_now():
@@ -60,17 +57,11 @@ whale_sens = st.sidebar.slider("Чутливість до китів", 1.5, 4.0,
 @st.cache_data(ttl=300)
 def get_data(symbol, period):
     try:
-        # Завантажуємо дані
         df = yf.download(symbol, period=f"{period}d", interval='5m', progress=False, auto_adjust=True)
         if df.empty: return pd.DataFrame()
-
-        # Вирівнюємо колонки (MultiIndex fix)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-
-        # Видаляємо дублікати та очищуємо від критичних NaN
         df = df.loc[:, ~df.columns.duplicated()]
-        # Важливо: видаляємо лише ті рядки, де немає ціни закриття
         df = df.dropna(subset=['Close'])
         return df
     except Exception as e:
@@ -80,24 +71,18 @@ def get_data(symbol, period):
 data = get_data(symbol, period)
 
 if not data.empty and len(data) > window:
-    # Копіюємо для розрахунків
     df_calc = data.copy()
     df_calc.index = pd.to_datetime(df_calc.index)
+    df_calc['Date_Only'] = df_calc.index.date  # Додано назад!
 
-    # --- РОЗРАХУНКИ ---
     # Z-Score
     df_calc['Mean'] = df_calc['Close'].rolling(window=int(window)).mean()
     df_calc['Std'] = df_calc['Close'].rolling(window=int(window)).std()
     df_calc['Z_Score'] = (df_calc['Close'] - df_calc['Mean']) / df_calc['Std']
 
-    # VWAP (Більш надійний метод розрахунку)
-    df_calc['Date_Only'] = df_calc.index.date
-    def calculate_vwap(df_group):
-        v = df_group['Volume'].values
-        p = df_group['Close'].values
-        return pd.Series((p * v).cumsum() / v.cumsum(), index=df_group.index)
-
-    df_calc['VWAP'] = df_calc.groupby('Date_Only', group_keys=False).apply(calculate_vwap)
+    # Надійний VWAP (тепер з правильними відступами)
+    df_calc['Price_Vol'] = df_calc['Close'] * df_calc['Volume']
+    df_calc['VWAP'] = df_calc.groupby('Date_Only')['Price_Vol'].cumsum() / df_calc.groupby('Date_Only')['Volume'].cumsum()
 
     # Кити та Айсберги
     vol_mean = df_calc['Volume'].rolling(20).mean()
@@ -105,45 +90,34 @@ if not data.empty and len(data) > window:
     price_pct = df_calc['Close'].pct_change().abs()
     df_calc['Iceberg'] = (price_pct < 0.0005) & (df_calc['Volume'] > vol_mean * 1.8)
 
-    # Фільтруємо дані для графіка (видаляємо початкові NaN від rolling)
     final_df = df_calc.dropna(subset=['Z_Score', 'VWAP']).copy()
 
     if not final_df.empty:
-        # --- ВІЗУАЛІЗАЦІЯ ---
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12), sharex=True)
         plt.subplots_adjust(hspace=0.1)
 
-        # 1. Ціна та VWAP
         ax1.plot(final_df.index, final_df['Close'], label='Price (5m)', color='black', alpha=0.6)
         ax1.plot(final_df.index, final_df['VWAP'], label='Intraday VWAP', color='orange', lw=2)
 
-        # Сигнали
         whales = final_df[final_df['Whale']]
         icebergs = final_df[final_df['Iceberg']]
         ax1.scatter(whales.index, whales['Close'], color='red', label='Whale', s=60, marker='^', zorder=5)
         ax1.scatter(icebergs.index, icebergs['Close'], color='blue', label='Iceberg', s=60, marker='s', zorder=5)
-
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.2)
 
-        # 2. Z-Score
         ax2.plot(final_df.index, final_df['Z_Score'], color='purple', label='Z-Score', lw=1.5)
         ax2.axhline(2.5, color='red', ls='--', alpha=0.5)
         ax2.axhline(-2.5, color='green', ls='--', alpha=0.5)
         ax2.fill_between(final_df.index, 2.5, final_df['Z_Score'], where=(final_df['Z_Score'] > 2.5), color='red', alpha=0.2)
         ax2.fill_between(final_df.index, -2.5, final_df['Z_Score'], where=(final_df['Z_Score'] < -2.5), color='green', alpha=0.2)
 
-        ax2.minorticks_on()
         ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2))
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d.%m'))
-        ax2.xaxis.set_minor_locator(mdates.MinuteLocator(interval=30))
-
         ax2.grid(visible=True, which='major', color='gray', alpha=0.3)
-        ax2.grid(visible=True, which='minor', color='lightgray', linestyle=':', alpha=0.2)
 
         st.pyplot(fig)
 
-        # ПАНЕЛЬ МЕТРИК
         col1, col2, col3 = st.columns(3)
         last_row = final_df.iloc[-1]
         with col1: st.metric("Ціна", f"${last_row['Close']:.2f}")
@@ -153,6 +127,6 @@ if not data.empty and len(data) > window:
             elif last_row['Z_Score'] < -2.5: st.success("🔔 КУПІВЛЯ")
             else: st.info("⚖️ Рівновага")
     else:
-        st.warning("Недостатньо обчислених даних. Спробуйте збільшити період або зменшити вікно Z-Score.")
+        st.warning("Недостатньо обчислених даних.")
 else:
-    st.error("Дані не завантажились або їх замало для розрахунку (мінімум 200 свічок).")
+    st.error("Дані не завантажились або їх замало.")
