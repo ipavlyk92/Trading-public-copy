@@ -10,37 +10,33 @@ from streamlit_autorefresh import st_autorefresh
 # 1. Налаштування сторінки
 st.set_page_config(page_title="Game Theory Trader", layout="wide")
 
-# --- БЛОК ТАЙМЕРА У SIDEPANEL ---
+# --- БЛОК ТАЙМЕРА (UTC+2) ---
 kyiv_tz = timezone(timedelta(hours=2))
 
 def get_now():
     return datetime.now(kyiv_tz)
 
-# Оновлюємо скрипт раз на 30 секунд (достатньо для 5-хв свічок і стабільності)
-st_autorefresh(interval=30000, key="global_refresh")
+refresh_minutes = 5
+st_autorefresh(interval=10000, key="timer_refresh")
 
 if 'next_update' not in st.session_state:
-    st.session_state.next_update = get_now() + timedelta(minutes=5)
-
-# Створюємо порожній контейнер у sidebar для таймера
-timer_placeholder = st.sidebar.empty()
+    st.session_state.next_update = get_now() + timedelta(minutes=refresh_minutes)
 
 remaining = (st.session_state.next_update - get_now()).total_seconds()
 
-# Відображаємо таймер у зарезервованому місці
-with timer_placeholder.container():
-    st.markdown(f"🕒 UTC+2: **{get_now().strftime('%H:%M:%S')}**")
-    st.markdown(f"⏳ Оновлення через: `{int(max(0, remaining))//60:02d}:{int(max(0, remaining))%60:02d}`")
-
 if remaining <= 0:
     st.cache_data.clear()
-    st.session_state.next_update = get_now() + timedelta(minutes=5)
+    st.session_state.next_update = get_now() + timedelta(minutes=refresh_minutes)
     st.rerun()
+
+st.sidebar.markdown(f"🕒 Поточний час (UTC+2): **{get_now().strftime('%H:%M:%S')}**")
+st.sidebar.markdown(f"### ⏳ Оновлення через: `{int(max(0, remaining))//60:02d}:{int(max(0, remaining))%60:02d}`")
 
 if st.sidebar.button("🔄 Оновити зараз"):
     st.cache_data.clear()
-    st.session_state.next_update = get_now() + timedelta(minutes=5)
+    st.session_state.next_update = get_now() + timedelta(minutes=refresh_minutes)
     st.rerun()
+
 
 
 st.title("📊 Інтрадей Термінал: Теорія Ігор")
